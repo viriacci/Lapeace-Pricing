@@ -1,10 +1,10 @@
-const CACHE='lapeace-pricing-v4';
-const CORE=['./','./index.html','./styles.css','./app.js','./quote-library.js','./cloud-sync.js','./manifest.webmanifest'];
+const CACHE='lapeace-pricing-v6';
+const FALLBACK_ASSETS=['./styles.css?v=6','./manifest.webmanifest?v=6'];
 
 self.addEventListener('install',event=>{
   event.waitUntil(
     caches.open(CACHE)
-      .then(cache=>cache.addAll(CORE))
+      .then(cache=>cache.addAll(FALLBACK_ASSETS))
       .catch(()=>{})
       .then(()=>self.skipWaiting())
   );
@@ -21,7 +21,7 @@ self.addEventListener('activate',event=>{
 async function networkFirst(request){
   try{
     const response=await fetch(request,{cache:'no-store'});
-    if(response&&response.ok){
+    if(response?.ok){
       const cache=await caches.open(CACHE);
       cache.put(request,response.clone()).catch(()=>{});
     }
@@ -39,19 +39,12 @@ self.addEventListener('fetch',event=>{
   const url=new URL(request.url);
   if(url.origin!==self.location.origin)return;
 
-  const fresh=request.mode==='navigate'||['document','script','style'].includes(request.destination);
-  if(fresh){
+  // Kod aplikacji i dokument zawsze próbujemy pobrać z sieci jako pierwszy.
+  // Dzięki temu zwykłe F5 nie uruchamia starej wersji JS z cache.
+  if(request.mode==='navigate'||['document','script','style'].includes(request.destination)){
     event.respondWith(networkFirst(request));
     return;
   }
 
-  event.respondWith(
-    caches.match(request).then(cached=>cached||fetch(request).then(response=>{
-      if(response&&response.ok){
-        const copy=response.clone();
-        caches.open(CACHE).then(cache=>cache.put(request,copy)).catch(()=>{});
-      }
-      return response;
-    }))
-  );
+  event.respondWith(caches.match(request).then(cached=>cached||networkFirst(request)));
 });
