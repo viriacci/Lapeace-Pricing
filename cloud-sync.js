@@ -3,149 +3,69 @@
 
 const SUPABASE_URL='https://dxrnijmpnjegsxaliwmc.supabase.co';
 const SUPABASE_PUBLISHABLE_KEY='sb_publishable_7goMLYW4rP04ZgYZiKr3Hg_RT12TvED';
-const CLOUD_MARKER_PREFIX='lpp.cloud.bound.';
 const KEYS={quotes:'lpp.quotes.v1',active:'lpp.activeQuote.v1',prices:'lpp.prices.v1',custom:'lpp.custom.v1'};
+const WORKSPACE_KEY='lpp.workspace.v1';
 
 if(!window.supabase){console.error('Supabase JS nie został załadowany.');return;}
 const sb=window.supabase.createClient(SUPABASE_URL,SUPABASE_PUBLISHABLE_KEY,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true}});
 
 let currentUser=null;
+let currentWorkspace=null;
 let started=false;
 let lastLocalSnapshot='';
 let lastRemoteSnapshot='';
 let pushTimer=null;
-let pullTimer=null;
 let suppressPush=false;
 
 function parse(key,fallback){try{return JSON.parse(localStorage.getItem(key))??fallback}catch{return fallback}}
-function stateFromLocal(){
-  return {
-    quotes:parse(KEYS.quotes,[]),
-    prices:parse(KEYS.prices,{}),
-    custom_items:parse(KEYS.custom,[]),
-    active_quote_id:localStorage.getItem(KEYS.active)||null
-  };
-}
-function normalizeState(s){return {
-  quotes:Array.isArray(s?.quotes)?s.quotes:[],
-  prices:s?.prices&&typeof s.prices==='object'&&!Array.isArray(s.prices)?s.prices:{},
-  custom_items:Array.isArray(s?.custom_items)?s.custom_items:[],
-  active_quote_id:s?.active_quote_id||null
-}}
+function stateFromLocal(){return{quotes:parse(KEYS.quotes,[]),prices:parse(KEYS.prices,{}),custom_items:parse(KEYS.custom,[]),active_quote_id:localStorage.getItem(KEYS.active)||null}}
+function normalizeState(s){return{quotes:Array.isArray(s?.quotes)?s.quotes:[],prices:s?.prices&&typeof s.prices==='object'&&!Array.isArray(s.prices)?s.prices:{},custom_items:Array.isArray(s?.custom_items)?s.custom_items:[],active_quote_id:s?.active_quote_id||null}}
 function stable(s){return JSON.stringify(normalizeState(s))}
-function meaningful(s){
-  const x=normalizeState(s);
-  if(Object.keys(x.prices).length||x.custom_items.length)return true;
-  if(x.quotes.length>1)return true;
-  const q=x.quotes[0];
-  if(!q)return false;
-  return (Array.isArray(q.items)&&q.items.length>0)||q.status==='done'||(q.name&&q.name!=='Wycena 1');
-}
-function applyLocal(s){
-  const x=normalizeState(s);suppressPush=true;
-  localStorage.setItem(KEYS.quotes,JSON.stringify(x.quotes));
-  localStorage.setItem(KEYS.prices,JSON.stringify(x.prices));
-  localStorage.setItem(KEYS.custom,JSON.stringify(x.custom_items));
-  if(x.active_quote_id)localStorage.setItem(KEYS.active,x.active_quote_id);else localStorage.removeItem(KEYS.active);
-  lastLocalSnapshot=stable(x);lastRemoteSnapshot=lastLocalSnapshot;
-  setTimeout(()=>{suppressPush=false;location.reload()},120);
-}
-function setCloudStatus(text,kind='ok'){
-  const el=document.getElementById('cloudStatus');if(!el)return;
-  el.textContent=text;el.dataset.kind=kind;
-}
-function toast(text){
-  let t=document.getElementById('cloudToast');if(!t){t=document.createElement('div');t.id='cloudToast';document.body.append(t)}
-  t.textContent=text;t.classList.add('show');clearTimeout(t._timer);t._timer=setTimeout(()=>t.classList.remove('show'),2600);
-}
-function installStyles(){
-  const s=document.createElement('style');s.textContent=`
-  #authOverlay{position:fixed;inset:0;z-index:99999;display:grid;place-items:center;padding:18px;background:rgba(4,7,12,.92);backdrop-filter:blur(14px)}
-  #authOverlay.hidden{display:none!important}.auth-card{width:min(430px,100%);padding:24px;border-radius:22px;background:#111823;border:1px solid rgba(255,255,255,.1);box-shadow:0 24px 80px rgba(0,0,0,.5)}.auth-card h2{margin:5px 0 8px}.auth-card p{color:#95a3b5;line-height:1.45}.auth-card label{display:block;margin:12px 0 6px;color:#c9d4e4;font-size:13px;font-weight:700}.auth-card input{width:100%;padding:12px 14px;border-radius:12px;border:1px solid rgba(255,255,255,.12);background:#0a1018;color:#eef4ff;outline:none}.auth-card input:focus{border-color:#7c5cff;box-shadow:0 0 0 3px rgba(124,92,255,.15)}.auth-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:16px}.auth-msg{min-height:20px;margin-top:12px;font-size:13px;color:#9db0c7}.auth-msg.error{color:#ff9aa6}.auth-msg.ok{color:#8ee6b0}.cloud-user{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.cloud-status{font-size:11px;padding:5px 8px;border:1px solid rgba(255,255,255,.12);border-radius:999px;color:#9ed7ff;background:rgba(0,198,255,.08)}.cloud-status[data-kind="warn"]{color:#ffd58a;background:rgba(255,180,0,.08)}.cloud-status[data-kind="error"]{color:#ff9aa6;background:rgba(255,95,113,.08)}.cloud-email{font-size:12px;color:#8e9bad;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}#cloudToast{position:fixed;right:18px;bottom:18px;z-index:999999;background:#111823;color:#eef4ff;border:1px solid rgba(255,255,255,.12);border-radius:12px;padding:11px 14px;box-shadow:0 16px 50px rgba(0,0,0,.4);opacity:0;transform:translateY(8px);pointer-events:none;transition:.18s}#cloudToast.show{opacity:1;transform:none}@media(max-width:700px){.auth-actions{grid-template-columns:1fr}.cloud-user{width:100%}.cloud-email{max-width:150px}}
-  `;document.head.append(s);
-}
-function installUI(){
-  installStyles();
-  const overlay=document.createElement('div');overlay.id='authOverlay';overlay.innerHTML=`<div class="auth-card"><div class="eyebrow">Synchronizacja chmurowa</div><h2>La Peace Pricing</h2><p>Zaloguj się tym samym kontem na każdym komputerze. Biblioteka wycen i cen będzie wspólna.</p><label>E-mail</label><input id="authEmail" type="email" autocomplete="email" placeholder="adres@email.pl"><label>Hasło</label><input id="authPassword" type="password" autocomplete="current-password" placeholder="minimum 6 znaków"><div class="auth-actions"><button id="authLogin" class="primary">Zaloguj się</button><button id="authSignup" class="secondary">Utwórz konto</button></div><div id="authMsg" class="auth-msg"></div></div>`;document.body.append(overlay);
-  const top=document.querySelector('.top-actions');if(top){const wrap=document.createElement('div');wrap.className='cloud-user';wrap.innerHTML='<span id="cloudStatus" class="cloud-status" data-kind="warn">CHMURA: oczekiwanie</span><span id="cloudEmail" class="cloud-email"></span><button id="cloudLogout" class="ghost" style="display:none">Wyloguj</button>';top.prepend(wrap)}
-  document.getElementById('authLogin').onclick=login;
-  document.getElementById('authSignup').onclick=signup;
-  document.getElementById('authPassword').addEventListener('keydown',e=>{if(e.key==='Enter')login()});
-  document.getElementById('cloudLogout')?.addEventListener('click',logout);
-}
-function authMsg(text,type=''){const el=document.getElementById('authMsg');if(!el)return;el.textContent=text;el.className='auth-msg '+type}
-async function login(){
-  const email=document.getElementById('authEmail').value.trim(),password=document.getElementById('authPassword').value;
-  if(!email||!password){authMsg('Podaj e-mail i hasło.','error');return}
-  authMsg('Logowanie…');const {error}=await sb.auth.signInWithPassword({email,password});if(error){authMsg(error.message,'error');return}authMsg('Zalogowano.','ok');
-}
-async function signup(){
-  const email=document.getElementById('authEmail').value.trim(),password=document.getElementById('authPassword').value;
-  if(!email||password.length<6){authMsg('Podaj e-mail i hasło mające co najmniej 6 znaków.','error');return}
-  authMsg('Tworzę konto…');
-  const redirectTo=location.origin+location.pathname;
-  const {data,error}=await sb.auth.signUp({email,password,options:{emailRedirectTo:redirectTo}});
-  if(error){authMsg(error.message,'error');return}
-  if(data.session)authMsg('Konto utworzone i zalogowane.','ok');else authMsg('Konto utworzone. Sprawdź e-mail i potwierdź rejestrację, potem wróć tutaj i się zaloguj.','ok');
-}
-async function logout(){await sb.auth.signOut();location.reload()}
-function showLoggedIn(user){
-  document.getElementById('authOverlay')?.classList.add('hidden');
-  const email=document.getElementById('cloudEmail');if(email)email.textContent=user.email||'';
-  const btn=document.getElementById('cloudLogout');if(btn)btn.style.display='inline-block';
-  setCloudStatus('CHMURA: połączono','ok');
-}
-function showLoggedOut(){document.getElementById('authOverlay')?.classList.remove('hidden');setCloudStatus('CHMURA: wylogowano','warn')}
+function meaningful(s){const x=normalizeState(s);if(Object.keys(x.prices).length||x.custom_items.length)return true;if(x.quotes.length>1)return true;const q=x.quotes[0];return !!q&&((Array.isArray(q.items)&&q.items.length>0)||q.status==='done'||(q.name&&q.name!=='Wycena 1'))}
+function applyLocal(s){const x=normalizeState(s);suppressPush=true;localStorage.setItem(KEYS.quotes,JSON.stringify(x.quotes));localStorage.setItem(KEYS.prices,JSON.stringify(x.prices));localStorage.setItem(KEYS.custom,JSON.stringify(x.custom_items));if(x.active_quote_id)localStorage.setItem(KEYS.active,x.active_quote_id);else localStorage.removeItem(KEYS.active);lastLocalSnapshot=stable(x);lastRemoteSnapshot=lastLocalSnapshot;setTimeout(()=>{suppressPush=false;location.reload()},120)}
+function setCloudStatus(text,kind='ok'){const el=document.getElementById('cloudStatus');if(!el)return;el.textContent=text;el.dataset.kind=kind}
+function toast(text){let t=document.getElementById('cloudToast');if(!t){t=document.createElement('div');t.id='cloudToast';document.body.append(t)}t.textContent=text;t.classList.add('show');clearTimeout(t._timer);t._timer=setTimeout(()=>t.classList.remove('show'),2800)}
+function esc(v){return String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
 
-async function getRemote(){
-  const {data,error}=await sb.from('app_state').select('quotes,prices,custom_items,active_quote_id,updated_at').eq('user_id',currentUser.id).maybeSingle();
-  if(error)throw error;return data;
+function installStyles(){const s=document.createElement('style');s.textContent=`
+#authOverlay,#workspaceOverlay{position:fixed;inset:0;z-index:99999;display:grid;place-items:center;padding:18px;background:rgba(4,7,12,.94);backdrop-filter:blur(14px)}#authOverlay.hidden,#workspaceOverlay.hidden{display:none!important}.auth-card{width:min(470px,100%);padding:24px;border-radius:22px;background:#111823;border:1px solid rgba(255,255,255,.1);box-shadow:0 24px 80px rgba(0,0,0,.5)}.auth-card h2{margin:5px 0 8px}.auth-card p{color:#95a3b5;line-height:1.45}.auth-card label{display:block;margin:12px 0 6px;color:#c9d4e4;font-size:13px;font-weight:700}.auth-card input{width:100%;padding:12px 14px;border-radius:12px;border:1px solid rgba(255,255,255,.12);background:#0a1018;color:#eef4ff;outline:none}.auth-card input:focus{border-color:#7c5cff;box-shadow:0 0 0 3px rgba(124,92,255,.15)}.auth-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:16px}.auth-msg{min-height:20px;margin-top:12px;font-size:13px;color:#9db0c7}.auth-msg.error{color:#ff9aa6}.auth-msg.ok{color:#8ee6b0}.cloud-user{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.cloud-status{font-size:11px;padding:5px 8px;border:1px solid rgba(255,255,255,.12);border-radius:999px;color:#9ed7ff;background:rgba(0,198,255,.08)}.cloud-status[data-kind="warn"]{color:#ffd58a;background:rgba(255,180,0,.08)}.cloud-status[data-kind="error"]{color:#ff9aa6;background:rgba(255,95,113,.08)}.cloud-email{font-size:12px;color:#8e9bad;max-width:190px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.workspace-choice{display:grid;gap:12px;margin-top:18px}.workspace-choice section{padding:14px;border:1px solid rgba(255,255,255,.1);border-radius:14px;background:rgba(255,255,255,.025)}.workspace-choice section h3{margin:0 0 5px}.workspace-code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;word-break:break-all;padding:10px;border-radius:10px;background:#090e15;border:1px solid rgba(255,255,255,.09);margin:10px 0}.team-card{width:min(560px,calc(100vw - 30px));}.team-row{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:10px 0;border-bottom:1px solid rgba(255,255,255,.08)}.team-row:last-child{border-bottom:0}.team-member{font-size:13px;color:#cbd6e7}.team-role{font-size:10px;padding:4px 7px;border-radius:999px;background:rgba(124,92,255,.13);color:#c7b9ff}#cloudToast{position:fixed;right:18px;bottom:18px;z-index:999999;background:#111823;color:#eef4ff;border:1px solid rgba(255,255,255,.12);border-radius:12px;padding:11px 14px;box-shadow:0 16px 50px rgba(0,0,0,.4);opacity:0;transform:translateY(8px);pointer-events:none;transition:.18s}#cloudToast.show{opacity:1;transform:none}@media(max-width:700px){.auth-actions{grid-template-columns:1fr}.cloud-user{width:100%}.cloud-email{max-width:130px}}
+`;document.head.append(s)}
+
+function installUI(){installStyles();
+  const overlay=document.createElement('div');overlay.id='authOverlay';overlay.innerHTML=`<div class="auth-card"><div class="eyebrow">Synchronizacja chmurowa</div><h2>La Peace Pricing</h2><p>Zaloguj się, aby korzystać ze wspólnej bazy wycen i cen.</p><label>E-mail</label><input id="authEmail" type="email" autocomplete="email" placeholder="adres@email.pl"><label>Hasło</label><input id="authPassword" type="password" autocomplete="current-password" placeholder="minimum 6 znaków"><div class="auth-actions"><button id="authLogin" class="primary">Zaloguj się</button><button id="authSignup" class="secondary">Utwórz konto</button></div><div id="authMsg" class="auth-msg"></div></div>`;document.body.append(overlay);
+  const w=document.createElement('div');w.id='workspaceOverlay';w.className='hidden';w.innerHTML=`<div class="auth-card"><div class="eyebrow">Wspólna baza</div><h2>Wybierz zespół</h2><p>Utwórz nową wspólną przestrzeń albo dołącz do istniejącej kodem otrzymanym od współpracownika.</p><div class="workspace-choice"><section><h3>Utwórz zespół</h3><input id="workspaceName" value="La Peace" placeholder="Nazwa zespołu"><button id="workspaceCreate" class="primary" style="margin-top:10px;width:100%">Utwórz wspólną bazę</button></section><section><h3>Dołącz do zespołu</h3><input id="workspaceJoinCode" placeholder="kod zespołu"><button id="workspaceJoin" class="secondary" style="margin-top:10px;width:100%">Dołącz kodem</button></section></div><div id="workspaceMsg" class="auth-msg"></div></div>`;document.body.append(w);
+  const team=document.createElement('dialog');team.id='teamDialog';team.className='modal';team.innerHTML=`<div class="modal-card glass team-card"><div class="modal-head"><div><div class="eyebrow">Wspólna baza</div><h2 id="teamName">Zespół</h2></div><button id="teamClose" class="icon-btn">×</button></div><p style="color:#8e9bad">Każdy zalogowany członek tego zespołu widzi tę samą bibliotekę wycen i cen.</p><div id="teamInviteWrap"><div class="field-label">Kod zaproszenia</div><div id="teamInviteCode" class="workspace-code"></div><div style="display:flex;gap:8px;flex-wrap:wrap"><button id="teamCopy" class="secondary">Kopiuj kod</button><button id="teamRotate" class="ghost">Wygeneruj nowy kod</button></div></div><div class="field-label">Członkowie</div><div id="teamMembers"></div></div>`;document.body.append(team);
+  const top=document.querySelector('.top-actions');if(top){const wrap=document.createElement('div');wrap.className='cloud-user';wrap.innerHTML='<span id="cloudStatus" class="cloud-status" data-kind="warn">CHMURA: oczekiwanie</span><span id="cloudEmail" class="cloud-email"></span><button id="teamBtn" class="ghost" style="display:none">Zespół</button><button id="cloudLogout" class="ghost" style="display:none">Wyloguj</button>';top.prepend(wrap)}
+  document.getElementById('authLogin').onclick=login;document.getElementById('authSignup').onclick=signup;document.getElementById('authPassword').addEventListener('keydown',e=>{if(e.key==='Enter')login()});document.getElementById('workspaceCreate').onclick=createWorkspace;document.getElementById('workspaceJoin').onclick=joinWorkspace;document.getElementById('cloudLogout')?.addEventListener('click',logout);document.getElementById('teamBtn')?.addEventListener('click',openTeam);document.getElementById('teamClose').onclick=()=>team.close();document.getElementById('teamCopy').onclick=copyInvite;document.getElementById('teamRotate').onclick=rotateInvite;
 }
-async function upsertRemote(local){
-  const x=normalizeState(local);setCloudStatus('CHMURA: zapisuję…','warn');
-  const {error}=await sb.from('app_state').upsert({user_id:currentUser.id,...x},{onConflict:'user_id'});
-  if(error)throw error;lastRemoteSnapshot=stable(x);lastLocalSnapshot=lastRemoteSnapshot;setCloudStatus('CHMURA: zsynchronizowano','ok');
-}
-async function initialSync(){
-  const marker=CLOUD_MARKER_PREFIX+currentUser.id;
-  const local=stateFromLocal();
-  let remote=await getRemote();
-  if(!remote){await upsertRemote(local);localStorage.setItem(marker,'1');toast('Lokalne dane zapisano w chmurze.');return}
-  const r=normalizeState(remote),ls=stable(local),rs=stable(r);lastRemoteSnapshot=rs;
-  if(ls===rs){lastLocalSnapshot=ls;localStorage.setItem(marker,'1');return}
-  const bound=localStorage.getItem(marker)==='1';
-  if(!bound&&meaningful(local)&&meaningful(r)){
-    const useLocal=confirm('Na tym komputerze są lokalne dane, a w chmurze istnieje już inna biblioteka.\n\nOK = wyślij dane z tego komputera do chmury\nAnuluj = pobierz dane z chmury na ten komputer');
-    if(useLocal){await upsertRemote(local);localStorage.setItem(marker,'1');toast('Dane z tego komputera zapisano w chmurze.');return}
-  }
-  if(!meaningful(r)&&meaningful(local)){await upsertRemote(local);localStorage.setItem(marker,'1');toast('Lokalne dane zapisano w chmurze.');return}
-  localStorage.setItem(marker,'1');applyLocal(r);
-}
-async function pushIfChanged(){
-  if(!started||suppressPush||!currentUser)return;
-  const local=stateFromLocal(),snap=stable(local);if(snap===lastLocalSnapshot)return;
-  lastLocalSnapshot=snap;clearTimeout(pushTimer);pushTimer=setTimeout(async()=>{try{await upsertRemote(stateFromLocal())}catch(e){console.error(e);setCloudStatus('CHMURA: błąd zapisu','error');toast('Nie udało się zapisać zmian w chmurze.')}} ,650);
-}
-async function pullIfChanged(){
-  if(!started||suppressPush||!currentUser)return;
-  try{
-    const remote=await getRemote();if(!remote)return;
-    const rs=stable(remote);if(rs===lastRemoteSnapshot)return;
-    const local=stateFromLocal(),ls=stable(local);
-    if(ls!==lastLocalSnapshot){return}
-    lastRemoteSnapshot=rs;
-    if(rs!==ls){setCloudStatus('CHMURA: pobieram zmiany…','warn');applyLocal(remote)}
-  }catch(e){console.error(e);setCloudStatus('CHMURA: offline','error')}
-}
-async function startForUser(user){
-  currentUser=user;showLoggedIn(user);if(started)return;started=true;
-  try{await initialSync()}catch(e){console.error(e);setCloudStatus('CHMURA: błąd synchronizacji','error');toast('Nie udało się uruchomić synchronizacji chmurowej.');}
-  lastLocalSnapshot=stable(stateFromLocal());
-  setInterval(pushIfChanged,700);
-  pullTimer=setInterval(pullIfChanged,5000);
-}
+function authMsg(text,type=''){const el=document.getElementById('authMsg');if(el){el.textContent=text;el.className='auth-msg '+type}}
+function workspaceMsg(text,type=''){const el=document.getElementById('workspaceMsg');if(el){el.textContent=text;el.className='auth-msg '+type}}
+async function login(){const email=document.getElementById('authEmail').value.trim(),password=document.getElementById('authPassword').value;if(!email||!password){authMsg('Podaj e-mail i hasło.','error');return}authMsg('Logowanie…');const {error}=await sb.auth.signInWithPassword({email,password});if(error){authMsg(error.message,'error');return}authMsg('Zalogowano.','ok')}
+async function signup(){const email=document.getElementById('authEmail').value.trim(),password=document.getElementById('authPassword').value;if(!email||password.length<6){authMsg('Podaj e-mail i hasło mające co najmniej 6 znaków.','error');return}authMsg('Tworzę konto…');const redirectTo=location.origin+location.pathname;const {data,error}=await sb.auth.signUp({email,password,options:{emailRedirectTo:redirectTo}});if(error){authMsg(error.message,'error');return}if(data.session)authMsg('Konto utworzone i zalogowane.','ok');else authMsg('Konto utworzone. Potwierdź adres e-mail, a potem się zaloguj.','ok')}
+async function logout(){await sb.auth.signOut();localStorage.removeItem(WORKSPACE_KEY);location.reload()}
+function showLoggedIn(user){document.getElementById('authOverlay')?.classList.add('hidden');const email=document.getElementById('cloudEmail');if(email)email.textContent=user.email||'';document.getElementById('cloudLogout').style.display='inline-block'}
+function showLoggedOut(){document.getElementById('authOverlay')?.classList.remove('hidden');document.getElementById('workspaceOverlay')?.classList.add('hidden');setCloudStatus('CHMURA: wylogowano','warn')}
+
+async function listMemberships(){const {data,error}=await sb.from('workspace_members').select('workspace_id,role,workspaces(id,name,invite_code,owner_id)');if(error)throw error;return data||[]}
+async function chooseWorkspace(){const memberships=await listMemberships();if(!memberships.length){currentWorkspace=null;document.getElementById('workspaceOverlay').classList.remove('hidden');setCloudStatus('CHMURA: wybierz zespół','warn');return false}const saved=localStorage.getItem(WORKSPACE_KEY);let m=memberships.find(x=>x.workspace_id===saved)||memberships[0];currentWorkspace={id:m.workspace_id,name:m.workspaces?.name||'Zespół',invite_code:m.workspaces?.invite_code||'',owner_id:m.workspaces?.owner_id||'',role:m.role};localStorage.setItem(WORKSPACE_KEY,currentWorkspace.id);document.getElementById('workspaceOverlay').classList.add('hidden');document.getElementById('teamBtn').style.display='inline-block';return true}
+async function createWorkspace(){const name=(document.getElementById('workspaceName').value||'La Peace').trim()||'La Peace';workspaceMsg('Tworzę wspólną bazę…');const {data,error}=await sb.rpc('create_workspace',{workspace_name:name});if(error){workspaceMsg(error.message,'error');return}const row=Array.isArray(data)?data[0]:data;if(!row){workspaceMsg('Nie udało się utworzyć zespołu.','error');return}localStorage.setItem(WORKSPACE_KEY,row.workspace_id);workspaceMsg('Utworzono.','ok');await activateWorkspace()}
+async function joinWorkspace(){const code=document.getElementById('workspaceJoinCode').value.trim();if(!code){workspaceMsg('Wklej kod zespołu.','error');return}workspaceMsg('Dołączam…');const {data,error}=await sb.rpc('join_workspace',{join_code:code});if(error){workspaceMsg(error.message,'error');return}const row=Array.isArray(data)?data[0]:data;if(!row){workspaceMsg('Nie udało się dołączyć.','error');return}localStorage.setItem(WORKSPACE_KEY,row.workspace_id);workspaceMsg('Dołączono.','ok');await activateWorkspace()}
+
+async function activateWorkspace(){started=false;currentWorkspace=null;const ok=await chooseWorkspace();if(!ok)return;await startSync();document.getElementById('workspaceOverlay').classList.add('hidden');toast(`Wspólna baza: ${currentWorkspace.name}`)}
+async function getRemote(){const {data,error}=await sb.from('workspace_state').select('quotes,prices,custom_items,active_quote_id,updated_at,updated_by').eq('workspace_id',currentWorkspace.id).maybeSingle();if(error)throw error;return data}
+async function upsertRemote(local){const x=normalizeState(local);setCloudStatus('CHMURA: zapisuję…','warn');const {error}=await sb.from('workspace_state').upsert({workspace_id:currentWorkspace.id,...x,updated_by:currentUser.id},{onConflict:'workspace_id'});if(error)throw error;lastRemoteSnapshot=stable(x);lastLocalSnapshot=lastRemoteSnapshot;setCloudStatus(`CHMURA: ${currentWorkspace.name}`,'ok')}
+async function initialSync(){const local=stateFromLocal();const remote=await getRemote();if(!remote){await upsertRemote(local);toast('Twoje lokalne dane zapisano jako początek wspólnej bazy.');return}const r=normalizeState(remote),ls=stable(local),rs=stable(r);lastRemoteSnapshot=rs;if(ls===rs){lastLocalSnapshot=ls;return}const marker=`lpp.workspace.bound.${currentWorkspace.id}`;const bound=localStorage.getItem(marker)==='1';if(!bound&&meaningful(local)&&meaningful(r)){const useLocal=confirm('Na tym komputerze są lokalne dane, a zespół ma już inną bazę.\n\nOK = zastąp wspólną bazę danymi z tego komputera\nAnuluj = pobierz wspólną bazę na ten komputer');if(useLocal){await upsertRemote(local);localStorage.setItem(marker,'1');return}}if(!meaningful(r)&&meaningful(local)){await upsertRemote(local);localStorage.setItem(marker,'1');return}localStorage.setItem(marker,'1');applyLocal(r)}
+async function pushIfChanged(){if(!started||suppressPush||!currentUser||!currentWorkspace)return;const local=stateFromLocal(),snap=stable(local);if(snap===lastLocalSnapshot)return;lastLocalSnapshot=snap;clearTimeout(pushTimer);pushTimer=setTimeout(async()=>{try{await upsertRemote(stateFromLocal())}catch(e){console.error(e);setCloudStatus('CHMURA: błąd zapisu','error');toast('Nie udało się zapisać zmian w chmurze.')}},650)}
+async function pullIfChanged(){if(!started||suppressPush||!currentUser||!currentWorkspace)return;try{const remote=await getRemote();if(!remote)return;const rs=stable(remote);if(rs===lastRemoteSnapshot)return;const local=stateFromLocal(),ls=stable(local);if(ls!==lastLocalSnapshot)return;lastRemoteSnapshot=rs;if(rs!==ls){setCloudStatus('CHMURA: pobieram zmiany…','warn');applyLocal(remote)}}catch(e){console.error(e);setCloudStatus('CHMURA: offline','error')}}
+async function startSync(){if(started)return;started=true;setCloudStatus(`CHMURA: ${currentWorkspace.name}`,'ok');try{await initialSync()}catch(e){console.error(e);setCloudStatus('CHMURA: błąd synchronizacji','error');toast('Nie udało się uruchomić synchronizacji zespołu.')}lastLocalSnapshot=stable(stateFromLocal());setInterval(pushIfChanged,700);setInterval(pullIfChanged,3000)}
+
+async function openTeam(){if(!currentWorkspace)return;document.getElementById('teamName').textContent=currentWorkspace.name;document.getElementById('teamInviteCode').textContent=currentWorkspace.invite_code||'brak';document.getElementById('teamRotate').style.display=currentWorkspace.role==='owner'?'inline-block':'none';const {data,error}=await sb.from('workspace_members').select('user_id,role,joined_at').eq('workspace_id',currentWorkspace.id);const box=document.getElementById('teamMembers');if(error)box.textContent='Nie udało się pobrać członków.';else box.innerHTML=(data||[]).map(m=>`<div class="team-row"><span class="team-member">${m.user_id===currentUser.id?esc(currentUser.email||'Ty'):esc(m.user_id.slice(0,8)+'…')}</span><span class="team-role">${m.role==='owner'?'WŁAŚCICIEL':'CZŁONEK'}</span></div>`).join('');document.getElementById('teamDialog').showModal()}
+async function copyInvite(){const code=currentWorkspace?.invite_code;if(!code)return;try{await navigator.clipboard.writeText(code);toast('Kod zespołu skopiowany.')}catch{prompt('Skopiuj kod zespołu:',code)}}
+async function rotateInvite(){if(!currentWorkspace||currentWorkspace.role!=='owner')return;if(!confirm('Wygenerować nowy kod? Stary przestanie działać.'))return;const {data,error}=await sb.rpc('rotate_workspace_invite',{wid:currentWorkspace.id});if(error){toast('Nie udało się zmienić kodu.');return}currentWorkspace.invite_code=data;document.getElementById('teamInviteCode').textContent=data;toast('Wygenerowano nowy kod.')}
+
+async function startForUser(user){currentUser=user;showLoggedIn(user);try{await activateWorkspace()}catch(e){console.error(e);setCloudStatus('CHMURA: błąd','error');document.getElementById('workspaceOverlay').classList.remove('hidden');workspaceMsg('Nie udało się pobrać zespołów.','error')}}
 
 installUI();
-sb.auth.onAuthStateChange((_event,session)=>{if(session?.user)startForUser(session.user);else{currentUser=null;showLoggedOut()}});
+sb.auth.onAuthStateChange((_event,session)=>{if(session?.user){if(!currentUser||currentUser.id!==session.user.id)startForUser(session.user)}else{currentUser=null;currentWorkspace=null;started=false;showLoggedOut()}});
 (async()=>{const {data}=await sb.auth.getSession();if(data.session?.user)await startForUser(data.session.user);else showLoggedOut()})();
 })();
