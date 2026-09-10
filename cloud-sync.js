@@ -7,10 +7,9 @@ const KEYS={workspace:'lpp.workspace.v1',pendingJoin:'lpp.pendingJoinCode.v1',pe
 if(!window.supabase||!window.LPPApp){console.error('Brak Supabase lub LPPApp.');return}
 
 const sb=window.supabase.createClient(SUPABASE_URL,SUPABASE_PUBLISHABLE_KEY,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true}});
-let currentUser=null,currentWorkspace=null,started=false,applyingRemote=false,pushing=false,pulling=false,dirty=false;
-let pushTimer=null,pullTimer=null,lastRemoteSnapshot='',lastRemoteUpdatedAt='';
+let currentUser=null,currentWorkspace=null,started=false,applyingRemote=false,pushing=false,pulling=false,dirty=false,remotePending=false;
+let pushTimer=null,pullTimer=null,realtimeChannel=null,lastRemoteSnapshot='',lastRemoteUpdatedAt='';
 
-function clone(v){return JSON.parse(JSON.stringify(v??null))}
 function normalizeState(s){return{quotes:Array.isArray(s?.quotes)?s.quotes:[],prices:s?.prices&&typeof s.prices==='object'&&!Array.isArray(s.prices)?s.prices:{},custom_items:Array.isArray(s?.custom_items)?s.custom_items:[],active_quote_id:s?.active_quote_id||null}}
 function stable(s){return JSON.stringify(normalizeState(s))}
 function stateFromApp(){return normalizeState(window.LPPApp.getCloudState())}
@@ -42,7 +41,7 @@ function showLoggedIn(user){document.getElementById('authOverlay')?.classList.ad
 
 async function login(){const email=document.getElementById('authEmail').value.trim(),password=document.getElementById('authPassword').value;if(!email||!password){authMsg('Podaj e-mail i hasło.','error');return}authMsg('Logowanie…');try{const {error}=await sb.auth.signInWithPassword({email,password});if(error)throw error;authMsg('Zalogowano.','ok')}catch(e){authMsg(e.message||'Nie udało się zalogować.','error')}}
 async function signup(){const email=document.getElementById('authEmail').value.trim(),password=document.getElementById('authPassword').value;if(!email||password.length<6){authMsg('Podaj e-mail i hasło mające co najmniej 6 znaków.','error');return}authMsg('Tworzę konto…');try{const redirectTo=location.origin+location.pathname+location.search;const {data,error}=await sb.auth.signUp({email,password,options:{emailRedirectTo:redirectTo}});if(error)throw error;authMsg(data.session?'Konto utworzone i zalogowane.':'Konto utworzone. Potwierdź adres e-mail, a potem się zaloguj.','ok')}catch(e){authMsg(e.message||'Nie udało się utworzyć konta.','error')}}
-async function logout(){stopSync();try{await sb.auth.signOut()}finally{currentUser=null;currentWorkspace=null;localStorage.removeItem(KEYS.workspace);clearPendingWrite();location.reload()}}
+async function logout(){stopSync();try{await sb.auth.signOut()}finally{currentUser=null;currentWorkspace=null;localStorage.removeItem(KEYS.workspace);location.reload()}}
 
 async function memberships(){const {data,error}=await sb.rpc('get_my_workspaces');if(error)throw error;return data||[]}
 function setWorkspaceFromMembership(m){currentWorkspace={id:m.workspace_id,name:m.workspace_name||'Zespół',invite_code:m.invite_code||'',owner_id:m.owner_id||'',role:m.role||'member'};localStorage.setItem(KEYS.workspace,currentWorkspace.id)}
@@ -63,16 +62,30 @@ async function activateWorkspace(id,name){stopSync();currentWorkspace={id,name,i
 
 function applyRemote(row){applyingRemote=true;try{window.LPPApp.applyRemote(normalizeState(row));lastRemoteSnapshot=stable(row);dirty=false;clearPendingWrite()}finally{applyingRemote=false}}
 async function fetchRemote(){const {data,error}=await sb.from('workspace_state').select('quotes,prices,custom_items,active_quote_id,updated_at,updated_by').eq('workspace_id',currentWorkspace.id).maybeSingle();if(error)throw error;return data}
-function schedulePush(delay=100){if(!started||applyingRemote)return;dirty=true;savePendingWrite();clearTimeout(pushTimer);pushTimer=setTimeout(pushNow,delay)}
+function schedulePush(delay=80){if(!started||applyingRemote)return;dirty=true;savePendingWrite();clearTimeout(pushTimer);pushTimer=setTimeout(pushNow,delay)}
 async function pushState(local){setCloudStatus('CHMURA: zapisuję…','warn');const {data,error}=await sb.from('workspace_state').upsert({workspace_id:currentWorkspace.id,...normalizeState(local),updated_by:currentUser.id},{onConflict:'workspace_id'}).select('updated_at').single();if(error)throw error;const snap=stable(local);lastRemoteSnapshot=snap;lastRemoteUpdatedAt=data?.updated_at||'';dirty=false;clearPendingWrite();setCloudStatus(`CHMURA: ${currentWorkspace.name}`,'ok')}
 async function pushNow(){
   clearTimeout(pushTimer);pushTimer=null;if(!started||!currentUser||!currentWorkspace||applyingRemote||pushing)return;
-  pushing=true;try{const local=stateFromApp();if(stable(local)===lastRemoteSnapshot){dirty=false;clearPendingWrite();return}await pushState(local)}catch(e){dirty=true;setCloudStatus('CHMURA: błąd zapisu','error');console.error('cloud push:',e);savePendingWrite();if(started&&!pushTimer)pushTimer=setTimeout(pushNow,1200)}finally{pushing=false}
+  pushing=true;try{const local=stateFromApp();if(stable(local)===lastRemoteSnapshot){dirty=false;clearPendingWrite();return}await pushState(local)}catch(e){dirty=true;setCloudStatus('CHMURA: błąd zapisu','error');console.error('cloud push:',e);savePendingWrite();if(started&&!pushTimer)pushTimer=setTimeout(pushNow,1200)}finally{pushing=false;if(remotePending){remotePending=false;setTimeout(pullNow,0)}}
 }
 async function pullNow(){
   if(!started||pulling||pushing||dirty||pushTimer||!currentWorkspace)return;pulling=true;
   try{const row=await fetchRemote();if(!row)return;const rs=stable(row);lastRemoteUpdatedAt=row.updated_at||lastRemoteUpdatedAt;if(rs===lastRemoteSnapshot)return;const local=stateFromApp();if(rs===stable(local)){lastRemoteSnapshot=rs;return}applyRemote(row);setCloudStatus(`CHMURA: ${currentWorkspace.name}`,'ok')}
   catch(e){setCloudStatus('CHMURA: błąd odczytu','error');console.error('cloud pull:',e)}finally{pulling=false}
+}
+function handleRealtime(row){
+  if(!started||!row||row.workspace_id!==currentWorkspace?.id)return;
+  if(pushing||dirty||pushTimer){remotePending=true;return}
+  const rs=stable(row);if(rs===lastRemoteSnapshot)return;
+  const local=stateFromApp();if(rs===stable(local)){lastRemoteSnapshot=rs;lastRemoteUpdatedAt=row.updated_at||lastRemoteUpdatedAt;return}
+  lastRemoteUpdatedAt=row.updated_at||lastRemoteUpdatedAt;applyRemote(row);setCloudStatus(`CHMURA: ${currentWorkspace.name}`,'ok');
+}
+function subscribeRealtime(){
+  if(realtimeChannel){sb.removeChannel(realtimeChannel).catch(()=>{});realtimeChannel=null}
+  if(!currentWorkspace)return;
+  realtimeChannel=sb.channel(`workspace-state-${currentWorkspace.id}`)
+    .on('postgres_changes',{event:'*',schema:'public',table:'workspace_state',filter:`workspace_id=eq.${currentWorkspace.id}`},payload=>handleRealtime(payload.new))
+    .subscribe(status=>{if(status==='CHANNEL_ERROR'||status==='TIMED_OUT')setCloudStatus('CHMURA: tryb awaryjny','warn')});
 }
 async function initialSync(){
   const local=stateFromApp(),remote=await fetchRemote(),pending=loadPendingWrite();
@@ -88,8 +101,8 @@ async function initialSync(){
   if(stable(local)===rs){lastRemoteSnapshot=rs;return}
   applyRemote(remote);
 }
-async function startSync(){if(!currentWorkspace||!currentUser)return;stopSync();started=true;setCloudStatus('CHMURA: synchronizacja…','warn');try{await initialSync();pullTimer=setInterval(pullNow,800);setCloudStatus(`CHMURA: ${currentWorkspace.name}`,'ok')}catch(e){setCloudStatus('CHMURA: błąd synchronizacji','error');console.error('cloud start:',e);pullTimer=setInterval(pullNow,1500)}}
-function stopSync(){started=false;clearInterval(pullTimer);clearTimeout(pushTimer);pullTimer=pushTimer=null;dirty=false;pushing=false;pulling=false}
+async function startSync(){if(!currentWorkspace||!currentUser)return;stopSync();started=true;setCloudStatus('CHMURA: synchronizacja…','warn');try{await initialSync();subscribeRealtime();pullTimer=setInterval(pullNow,15000);setCloudStatus(`CHMURA: ${currentWorkspace.name}`,'ok')}catch(e){setCloudStatus('CHMURA: błąd synchronizacji','error');console.error('cloud start:',e);pullTimer=setInterval(pullNow,5000)}}
+function stopSync(){started=false;clearInterval(pullTimer);clearTimeout(pushTimer);pullTimer=pushTimer=null;dirty=false;pushing=false;pulling=false;remotePending=false;if(realtimeChannel){sb.removeChannel(realtimeChannel).catch(()=>{});realtimeChannel=null}}
 
 async function openTeam(){
   if(!currentWorkspace)return;document.getElementById('teamName').textContent=currentWorkspace.name;const link=`${location.origin}${location.pathname}?join=${currentWorkspace.invite_code}`;document.getElementById('teamInviteLink').textContent=link;document.getElementById('teamInviteWrap').style.display=currentWorkspace.role==='owner'?'block':'none';const membersEl=document.getElementById('teamMembers');membersEl.textContent='Ładowanie…';
