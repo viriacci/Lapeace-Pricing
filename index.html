@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="theme-color" content="#0d1117" />
+  <title>La Peace Pricing</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="bg"></div>
+  <main class="app-shell">
+    <header class="topbar glass">
+      <div>
+        <div class="eyebrow">Minecraft 1.21.11</div>
+        <h1>La Peace Pricing</h1>
+      </div>
+      <div class="top-actions">
+        <button id="priceLibraryBtn" class="secondary">Biblioteka cen</button>
+        <button id="addBtn" class="primary">+ Dodaj przedmiot</button>
+      </div>
+    </header>
+
+    <section class="layout">
+      <div class="panel glass">
+        <div class="section-head">
+          <div>
+            <h2>Wycena</h2>
+            <p id="dbStatus">Ładowanie bazy przedmiotów…</p>
+          </div>
+          <button id="clearBtn" class="ghost">Wyczyść</button>
+        </div>
+        <div id="quoteList" class="quote-list empty-state">Brak przedmiotów. Dodaj pierwszy element do wyceny.</div>
+      </div>
+
+      <aside class="summary glass">
+        <h2>Podsumowanie</h2>
+        <div class="summary-row"><span>Pozycje</span><strong id="lineCount">0</strong></div>
+        <div class="summary-row"><span>Sztuki</span><strong id="itemCount">0</strong></div>
+        <div class="divider"></div>
+        <div class="total-row"><span>Razem</span><strong id="grandTotal">0,00</strong></div>
+      </aside>
+    </section>
+  </main>
+
+  <dialog id="itemDialog" class="modal">
+    <form method="dialog" class="modal-card glass modal-large" id="itemForm">
+      <div class="modal-head">
+        <div><div class="eyebrow">Dodawanie</div><h2>Dodaj przedmiot</h2></div>
+        <button value="cancel" class="icon-btn" aria-label="Zamknij">×</button>
+      </div>
+      <label class="field-label" for="itemSearch">Nazwa przedmiotu</label>
+      <input id="itemSearch" class="search-input" autocomplete="off" placeholder="np. Sculk, Andesite, Stone…" />
+      <div id="suggestions" class="suggestions"></div>
+      <div id="selectedPreview" class="selected-preview hidden"></div>
+      <div class="form-grid">
+        <label>Stacki<input id="stacksInput" type="number" min="0" step="1" value="0" /></label>
+        <label>Sztuki<input id="piecesInput" type="number" min="0" step="1" value="1" /></label>
+        <label>Cena / szt.<input id="unitPriceInput" type="number" min="0" step="0.01" value="0" /></label>
+      </div>
+      <div id="recipeBox" class="recipe-box hidden"></div>
+      <div class="modal-actions">
+        <button value="cancel" class="secondary">Anuluj</button>
+        <button id="confirmAddBtn" value="default" class="primary">Dodaj do wyceny</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="priceLibraryDialog" class="modal">
+    <div class="modal-card glass modal-large">
+      <div class="modal-head">
+        <div><div class="eyebrow">Cennik</div><h2>Biblioteka zapisanych cen</h2></div>
+        <button id="closePriceLibrary" class="icon-btn">×</button>
+      </div>
+      <input id="priceLibrarySearch" class="search-input" placeholder="Szukaj zapisanej ceny…" />
+      <div id="priceLibraryList" class="price-library"></div>
+    </div>
+  </dialog>
+
+  <template id="quoteTemplate">
+    <article class="quote-card">
+      <div class="item-icon-wrap"><img class="item-icon" alt="" /></div>
+      <div class="item-main"><strong class="item-name"></strong><small class="item-id"></small><span class="item-qty"></span></div>
+      <div class="item-price"></div>
+      <button class="delete-btn" title="Usuń">×</button>
+    </article>
+  </template>
+
+  <script src="app.js"></script>
+</body>
+</html>
