@@ -1,0 +1,10 @@
+{
+  "name": "La Peace Pricing",
+  "short_name": "LaPeace",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#080b10",
+  "theme_color": "#0d1117",
+  "description": "Wycena zleceń i przedmiotów Minecraft Java 1.21.11"
+}
