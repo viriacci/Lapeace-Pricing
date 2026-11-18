@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>START GRY | Odliczanie do północy</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: transparent !important; }
+    body {
+      display: grid;
+      place-items: center;
+      font-family: 'Segoe UI', Inter, Arial, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    .overlay {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: clamp(22px, 3vw, 56px);
+      width: max-content;
+      max-width: calc(100vw - 48px);
+      padding: clamp(21px, 2.2vw, 40px) clamp(28px, 3.6vw, 68px);
+      border: 1px solid rgba(130, 228, 255, .30);
+      border-radius: 24px;
+      background: linear-gradient(115deg, rgba(13, 22, 39, .92), rgba(16, 13, 32, .92));
+      box-shadow: 0 16px 60px rgba(0, 0, 0, .55), inset 0 1px 0 rgba(255, 255, 255, .12), 0 0 38px rgba(82, 190, 242, .13);
+      backdrop-filter: blur(8px);
+    }
+    .title {
+      margin: 0;
+      white-space: nowrap;
+      font-size: clamp(36px, 5.4vw, 104px);
+      line-height: 1;
+      font-weight: 900;
+      letter-spacing: -.045em;
+      color: #f5faff;
+      text-shadow: 0 2px 20px rgba(65, 213, 255, .22);
+    }
+    .separator {
+      width: 3px;
+      height: clamp(45px, 5.6vw, 100px);
+      flex: 0 0 3px;
+      border-radius: 3px;
+      background: linear-gradient(180deg, #9b7dff, #57dcff);
+      box-shadow: 0 0 22px rgba(89, 206, 255, .5);
+    }
+    .countdown {
+      display: block;
+      min-width: 7.9ch;
+      white-space: nowrap;
+      color: #7fe6ff;
+      font: 800 clamp(38px, 5.3vw, 102px)/1 ui-monospace, 'Cascadia Code', Consolas, monospace;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: -.065em;
+      text-shadow: 0 0 28px rgba(63, 208, 255, .32);
+    }
+    body.bottom { align-items: end; padding-bottom: 6vh; }
+    body.bottom .overlay { margin-bottom: 0; }
+    @media (max-width: 900px) {
+      .overlay { gap: 18px; padding: 22px 28px; border-radius: 17px; }
+      .title { font-size: clamp(28px, 5vw, 60px); }
+      .countdown { font-size: clamp(29px, 5vw, 60px); }
+      .separator { height: 48px; width: 2px; flex-basis: 2px; }
+    }
+    @media (max-width: 570px) {
+      .overlay { flex-direction: column; gap: 10px; }
+      .separator { width: 85%; height: 2px; flex-basis: 2px; }
+      .title, .countdown { font-size: clamp(32px, 9vw, 56px); }
+    }
+  </style>
+</head>
+<body>
+  <main class="overlay" role="timer" aria-label="Start gry, czas do północy w Polsce">
+    <h1 class="title">START GRY</h1>
+    <span class="separator" aria-hidden="true"></span>
+    <time id="clock" class="countdown" aria-label="Pozostały czas">--:--:--</time>
+  </main>
+  <script>
+    (() => {
+      'use strict';
+      const timezone = 'Europe/Warsaw';
+      const formatter = new Intl.DateTimeFormat('en-GB', {
+        timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23'
+      });
+      const partsAt = timestamp => Object.fromEntries(
+        formatter.formatToParts(timestamp)
+          .filter(part => part.type !== 'literal')
+          .map(part => [part.type, Number(part.value)])
+      );
+      const asWallTime = p => Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second);
+      const now = Date.now();
+      const today = partsAt(now);
+      const desiredWall = Date.UTC(today.year, today.month - 1, today.day + 1);
+      let midnight = desiredWall;
+      for (let i = 0; i < 4; i++) midnight += desiredWall - asWallTime(partsAt(midnight));
+
+      const element = document.getElementById('clock');
+      const pad = n => String(n).padStart(2, '0');
+      function update() {
+        const seconds = Math.max(0, Math.ceil((midnight - Date.now()) / 1000));
+        const hours = Math.floor(seconds / 3600);
+        const minutes = Math.floor((seconds % 3600) / 60);
+        const rest = seconds % 60;
+        element.textContent = pad(hours) + ':' + pad(minutes) + ':' + pad(rest);
+      }
+      if (new URLSearchParams(window.location.search).get('position') === 'bottom') {
+        document.body.classList.add('bottom');
+      }
+      update();
+      setInterval(update, 200);
+      document.addEventListener('visibilitychange', update);
+    })();
+  </script>
+</body>
+</html>
